@@ -128,4 +128,4 @@ cargo clippy --workspace
 
 ## License
 
-[MIT](Cargo.toml)
+[CC BY-NC-ND 4.0](LICENSE) — You may share this work for non-commercial purposes with attribution. No derivatives or modifications allowed.
