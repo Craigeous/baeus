@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+          components: clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-arm64-ci-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-arm64-ci-
+
+      - name: Clippy
+        env:
+          RUST_MIN_STACK: "268435456"
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Test
+        env:
+          RUST_MIN_STACK: "268435456"
+        run: cargo nextest run --workspace

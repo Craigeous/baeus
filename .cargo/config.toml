@@ -1,0 +1,5 @@
+# GPUI proc-macro expansion requires a large stack for the `syn` parser.
+# When running `cargo test` on baeus-ui, set RUST_MIN_STACK=268435456
+# or use: cargo test --workspace --exclude baeus-ui
+# The render code's deeply nested builder patterns cause stack overflow
+# in the gpui_macros proc-macro during test compilation.

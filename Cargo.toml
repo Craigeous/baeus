@@ -1,0 +1,85 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/baeus-app",
+    "crates/baeus-core",
+    "crates/baeus-ui",
+    "crates/baeus-helm",
+    "crates/baeus-terminal",
+    "crates/baeus-editor",
+    "crates/baeus-plugins",
+    "crates/baeus-test-utils",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Kubernetes
+kube = { version = "0.98", features = ["runtime", "derive", "client", "ws"] }
+kube-runtime = "0.98"
+k8s-openapi = { version = "0.24", features = ["latest"] }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+
+# Text editing
+ropey = "1"
+tree-sitter = "0.25"
+tree-sitter-yaml = "0.7"
+
+# Terminal
+alacritty_terminal = "0.25"
+portable-pty = "0.9"
+
+# Graph
+petgraph = "0.7"
+
+# Plugin loading
+libloading = "0.8"
+
+# Helm (base64/gzip for release decoding)
+base64 = "0.22"
+flate2 = "1"
+
+# GPU-accelerated UI
+gpui = "0.2.2"
+gpui-component = "0.5.1"
+gpui-component-assets = "0.5.1"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+dirs = "6"
+fuzzy-matcher = "0.3"
+regex = "1"
+notify = "7"
+tempfile = "3"
+zeroize = "1"
+secrecy = "0.10"
+ring = "0.17"
+rustls = { version = "0.23", features = ["ring"] }
+open = "5"
+
+# AWS SDK
+aws-config = "1"
+aws-sdk-eks = "1"
+aws-sdk-ssooidc = "1"
+aws-sdk-sso = "1"
+aws-sdk-sts = "1"
+aws-credential-types = "1"
+aws-types = "1"
+aws-smithy-runtime-api = "1"

@@ -1,0 +1,12 @@
+pub mod cluster_list;
+pub mod crd_browser;
+pub mod dashboard;
+pub mod events;
+pub mod helm_install;
+pub mod helm_releases;
+pub mod namespace_map;
+pub mod port_forward;
+pub mod resource_detail;
+pub mod plugin_manager;
+pub mod preferences;
+pub mod resource_list;

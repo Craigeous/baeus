@@ -1,0 +1,35 @@
+# Rust
+target/
+**/*.rs.bk
+*.rlib
+*.prof*
+
+# Cargo
+# Keep Cargo.lock for binary projects
+debug/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env*
+*.log
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+release/
+
+# Tool-specific
+.firecrawl/
+.specify/
+CLAUDE.md

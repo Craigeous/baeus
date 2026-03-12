@@ -1,0 +1,30 @@
+[package]
+name = "baeus-app"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+baeus-core = { path = "../baeus-core" }
+baeus-ui = { path = "../baeus-ui" }
+baeus-helm = { path = "../baeus-helm" }
+baeus-terminal = { path = "../baeus-terminal" }
+baeus-editor = { path = "../baeus-editor" }
+baeus-plugins = { path = "../baeus-plugins" }
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-component-assets.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dirs.workspace = true
+rustls.workspace = true
+rust-embed = "8"
+
+[dev-dependencies]
+baeus-test-utils = { path = "../baeus-test-utils" }

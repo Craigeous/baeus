@@ -1,0 +1,19 @@
+[package]
+name = "baeus-plugins"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+baeus-core = { path = "../baeus-core" }
+libloading.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+baeus-test-utils = { path = "../baeus-test-utils" }
