@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 jobs:
-  # ── macOS: build + release (independent, ships immediately) ──────────
+  # ── macOS: clippy + test + build ─────────────────────────────────────
   build-macos:
     runs-on: macos-14
     steps:
@@ -22,6 +22,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
+          components: clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
 
       - name: Cache cargo registry & build
         uses: actions/cache@v4
@@ -33,12 +37,22 @@ jobs:
           key: macos-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: macos-arm64-cargo-
 
+      - name: Clippy
+        env:
+          RUST_MIN_STACK: "268435456"
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Test
+        env:
+          RUST_MIN_STACK: "268435456"
+        run: cargo nextest run --workspace
+
       - name: Build release binary
         env:
           RUST_MIN_STACK: "268435456"
         run: cargo build --release --target aarch64-apple-darwin
 
-      - name: Create .app bundle
+      - name: Create .app bundle + DMG
         run: |
           APP_NAME="Baeus"
           BINARY_NAME="baeus-app"
@@ -57,48 +71,21 @@ jobs:
 
           echo -n "APPL????" > "${BUNDLE_DIR}/Contents/PkgInfo"
 
-      - name: Create DMG
-        run: |
-          APP_NAME="Baeus"
-          BUNDLE_DIR="target/release/${APP_NAME}.app"
-          DMG_PATH="target/release/${APP_NAME}-macos-arm64.dmg"
-
           STAGING_DIR=$(mktemp -d)
           cp -r "${BUNDLE_DIR}" "${STAGING_DIR}/"
           ln -s /Applications "${STAGING_DIR}/Applications"
           hdiutil create -volname "${APP_NAME}" -srcfolder "${STAGING_DIR}" \
-            -ov -format UDZO "${DMG_PATH}"
+            -ov -format UDZO "Baeus-macos-arm64.dmg"
           rm -rf "${STAGING_DIR}"
 
-      - name: Generate release tag
-        id: tag
-        run: |
-          SHORT_SHA="${GITHUB_SHA::7}"
-          DATE=$(date -u +%Y%m%d)
-          TAG="v0.1.0-dev.${DATE}.${SHORT_SHA}"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: Baeus ${{ steps.tag.outputs.tag }}
-          body: |
-            Automated build from `main` (${{ github.sha }}).
+          name: Baeus-macos-arm64.dmg
+          path: Baeus-macos-arm64.dmg
 
-            ## Downloads
-
-            | Platform | File | Install |
-            |----------|------|---------|
-            | **macOS (Apple Silicon)** | `Baeus-macos-arm64.dmg` | Open DMG, drag to Applications. Run `xattr -cr /Applications/Baeus.app` (unsigned). |
-            | **Linux (x86_64)** | `Baeus-linux-x86_64.tar.gz` | Extract and run `./baeus`. Requires Vulkan + Wayland/X11 libs. |
-            | **Windows (x86_64)** | `Baeus-windows-x86_64.zip` | Extract and run `baeus.exe`. |
-          files: target/release/Baeus-macos-arm64.dmg
-          prerelease: true
-          make_latest: true
-
-  # ── Linux: check → build → upload to same release ───────────────────
-  check-linux:
+  # ── Linux: clippy + test + build ─────────────────────────────────────
+  build-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -130,8 +117,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ubuntu-ci-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ubuntu-ci-
+          key: linux-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: linux-x64-cargo-
 
       - name: Clippy
         env:
@@ -142,38 +129,6 @@ jobs:
         env:
           RUST_MIN_STACK: "268435456"
         run: cargo nextest run --workspace
-
-  build-linux:
-    needs: [check-linux]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            gcc g++ make cmake clang mold \
-            libasound2-dev libfontconfig-dev libgit2-dev \
-            libglib2.0-dev libssl-dev libva-dev \
-            libvulkan1 libwayland-dev libx11-xcb-dev \
-            libxkbcommon-x11-dev libzstd-dev libstdc++-14-dev \
-            libsqlite3-dev
-
-      - name: Cache cargo registry & build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: linux-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: linux-x64-cargo-
 
       - name: Build release binary
         env:
@@ -187,99 +142,29 @@ jobs:
           tar -czf Baeus-linux-x86_64.tar.gz -C dist baeus
           rm -rf dist
 
-      - name: Generate release tag
-        id: tag
-        run: |
-          SHORT_SHA="${GITHUB_SHA::7}"
-          DATE=$(date -u +%Y%m%d)
-          TAG="v0.1.0-dev.${DATE}.${SHORT_SHA}"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-
-      - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          files: Baeus-linux-x86_64.tar.gz
+          name: Baeus-linux-x86_64.tar.gz
+          path: Baeus-linux-x86_64.tar.gz
 
-  # ── Windows: check → build → upload to same release ─────────────────
-  check-windows:
-    runs-on: windows-latest
+  # ── Create release after all builds pass ─────────────────────────────
+  release:
+    name: Create Release
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
-          targets: x86_64-pc-windows-msvc
-          components: clippy
+          path: artifacts
+          merge-multiple: true
 
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
-
-      - name: Cache cargo registry & build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: windows-ci-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: windows-ci-
-
-      - name: Clippy
-        env:
-          RUST_MIN_STACK: "268435456"
-        run: cargo clippy --workspace -- -D warnings
-
-      - name: Test
-        env:
-          RUST_MIN_STACK: "268435456"
-        run: cargo nextest run --workspace
-
-  build-windows:
-    needs: [check-windows]
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - name: Cache cargo registry & build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: windows-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: windows-x64-cargo-
-
-      - name: Build release binary
-        env:
-          RUST_MIN_STACK: "268435456"
-        run: cargo build --release --target x86_64-pc-windows-msvc
-
-      - name: Package zip
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist
-          Copy-Item "target\x86_64-pc-windows-msvc\release\baeus-app.exe" "dist\baeus.exe"
-          Compress-Archive -Path "dist\baeus.exe" -DestinationPath "Baeus-windows-x86_64.zip"
-
-      - name: Generate release tag
-        id: tag
-        shell: bash
-        run: |
-          SHORT_SHA="${GITHUB_SHA::7}"
-          DATE=$(date -u +%Y%m%d)
-          TAG="v0.1.0-dev.${DATE}.${SHORT_SHA}"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-
-      - name: Upload to GitHub Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          files: Baeus-windows-x86_64.zip
+          tag_name: v0.1.0-build.${{ github.run_number }}
+          generate_release_notes: true
+          files: artifacts/*
