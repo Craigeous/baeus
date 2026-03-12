@@ -722,12 +722,13 @@ impl AppShell {
                     });
                 // If the per-cluster role is the same as the already-assumed role,
                 // treat it as "no role" — the session already has those credentials.
-                let effective_role = role.filter(|r| r.trim() != already_assumed_role);
+                let effective_role = role.clone().filter(|r| r.trim() != already_assumed_role);
                 tracing::info!(
                     "EKS wizard: cluster '{}' (region={}) — role: {:?} (already_assumed: '{}')",
                     cluster.name, cluster.region, effective_role, already_assumed_role,
                 );
-                Some((cluster, effective_role))
+                // (cluster, effective_role for live connection, full_role for persistence)
+                Some((cluster, effective_role, role))
             })
             .collect();
         let base_credentials = session.credentials.clone();
@@ -737,7 +738,7 @@ impl AppShell {
         let sso_credentials = wizard.original_sso_credentials.clone()
             .unwrap_or_else(|| base_credentials.clone());
 
-        for (cluster, role_arn) in &selected {
+        for (cluster, role_arn, _full_role) in &selected {
             let context_name = aws_eks::eks_context_name(cluster);
             let display_name = format!("{} ({})", cluster.name, cluster.region);
             let conn = ClusterConnection::new(cluster.name.clone(), context_name.clone(), cluster.endpoint.clone(), AuthMethod::AwsEks);
@@ -844,8 +845,8 @@ impl AppShell {
         }
 
         // Persist the connected EKS clusters so they survive app restart.
-        // (auth_method_str, sso_url, sso_region extracted earlier while wizard was borrowed)
-        for (cluster, role_arn) in &selected {
+        // Use full_role (not effective_role) so --role-arn is always in the kubeconfig.
+        for (cluster, _effective_role, full_role) in &selected {
             use crate::views::preferences::SavedEksConnectionInfo;
             let info = SavedEksConnectionInfo {
                 cluster_name: cluster.name.clone(),
@@ -856,7 +857,7 @@ impl AppShell {
                 auth_method: auth_method_str.to_string(),
                 sso_start_url: sso_url.clone(),
                 sso_region: sso_region.clone(),
-                role_arn: role_arn.clone(),
+                role_arn: full_role.clone(),
             };
             // Avoid duplicates (by ARN)
             self.preferences.saved_eks_connections.retain(|c| c.cluster_arn != info.cluster_arn);
