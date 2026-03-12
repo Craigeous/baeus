@@ -77,7 +77,7 @@ fn main() {
                 },
                 sso_start_url: c.sso_start_url.clone(),
                 sso_region: c.sso_region.clone(),
-                role_arn: None,
+                role_arn: c.role_arn.clone(),
             }
         }).collect(),
     };

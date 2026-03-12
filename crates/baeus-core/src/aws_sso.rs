@@ -106,6 +106,79 @@ pub fn inject_aws_profile_into_kubeconfig(
     Ok(())
 }
 
+/// Inject AWS credentials into a kubeconfig's exec env section (in-memory only).
+/// This allows the exec plugin (`aws eks get-token`) to use the wizard's
+/// in-memory credentials without writing secrets to disk.
+pub fn inject_aws_credentials_into_kubeconfig(
+    kubeconfig: &mut kube::config::Kubeconfig,
+    context_name: &str,
+    access_key_id: &str,
+    secret_access_key: &str,
+    session_token: Option<&str>,
+) -> Result<()> {
+    let ctx = kubeconfig
+        .contexts
+        .iter()
+        .find(|c| c.name == context_name)
+        .with_context(|| format!("Context '{context_name}' not found in kubeconfig"))?;
+
+    let user_name = ctx
+        .context
+        .as_ref()
+        .and_then(|c| c.user.clone())
+        .unwrap_or_default();
+
+    let auth_info = kubeconfig
+        .auth_infos
+        .iter_mut()
+        .find(|a| a.name == user_name)
+        .with_context(|| {
+            format!("AuthInfo '{user_name}' not found")
+        })?;
+
+    if let Some(ref mut ai) = auth_info.auth_info {
+        if let Some(ref mut exec_cfg) = ai.exec {
+            let env_vars = vec![
+                ("AWS_ACCESS_KEY_ID", access_key_id),
+                ("AWS_SECRET_ACCESS_KEY", secret_access_key),
+            ];
+
+            for (name, value) in env_vars {
+                let mut env_var = HashMap::new();
+                env_var.insert("name".to_string(), name.to_string());
+                env_var.insert("value".to_string(), value.to_string());
+                match exec_cfg.env {
+                    Some(ref mut envs) => {
+                        if let Some(existing) = envs.iter_mut().find(|e| e.get("name").map(|n| n.as_str()) == Some(name)) {
+                            existing.insert("value".to_string(), value.to_string());
+                        } else {
+                            envs.push(env_var);
+                        }
+                    }
+                    None => {
+                        exec_cfg.env = Some(vec![env_var]);
+                    }
+                }
+            }
+
+            if let Some(token) = session_token {
+                let mut env_var = HashMap::new();
+                env_var.insert("name".to_string(), "AWS_SESSION_TOKEN".to_string());
+                env_var.insert("value".to_string(), token.to_string());
+                if let Some(ref mut envs) = exec_cfg.env {
+                    if let Some(existing) = envs.iter_mut().find(|e| e.get("name").map(|n| n.as_str()) == Some("AWS_SESSION_TOKEN")) {
+                        existing.insert("value".to_string(), token.to_string());
+                    } else {
+                        envs.push(env_var);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Check if an error message looks like an AWS SSO token expiry.
 ///
 /// Matches common error strings from `aws eks get-token` and the AWS CLI

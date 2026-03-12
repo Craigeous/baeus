@@ -492,6 +492,8 @@ pub struct AppShell {
     /// T363: Connection error messages keyed by cluster context name.
     /// Populated by `on_cluster_connection_lost`, cleared by `on_cluster_reconnected`.
     pub(crate) connection_errors: HashMap<String, String>,
+    /// Update notification: (latest_version, download_url) if newer than current.
+    update_available: Option<(String, String)>,
     /// Scroll handles for navigator uniform_lists, keyed by cluster ID.
     navigator_scroll_handles: HashMap<uuid::Uuid, UniformListScrollHandle>,
     /// Tracks which detail sections are collapsed (by section ID string).
@@ -640,7 +642,7 @@ impl AppShell {
         clusters: Vec<(String, String, String, String)>,
         initial_prefs: PreferencesState,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Self {
         let mut sidebar = SidebarState::default();
         let mut cluster_manager = ClusterManager::new();
@@ -720,6 +722,7 @@ impl AppShell {
             k8s_version: None,
             view_errors: HashMap::new(),
             connection_errors: HashMap::new(),
+            update_available: None,
             navigator_scroll_handles: HashMap::new(),
             detail_collapsed_sections: HashSet::new(),
             revealed_secret_keys: HashSet::new(),
@@ -796,22 +799,31 @@ impl AppShell {
         }
 
         // Restore saved EKS connections from preferences.
-        shell.restore_saved_eks_connections();
+        let restored_contexts = shell.restore_saved_eks_connections();
+
+        // Auto-connect restored EKS clusters.
+        for ctx in &restored_contexts {
+            shell.handle_connect_cluster(ctx, cx);
+        }
+
+        // Check for updates in the background.
+        shell.check_for_updates(cx);
 
         shell
     }
 
     /// Restore persisted EKS connections on app startup.
-    /// Creates sidebar entries, writes kubeconfig files, and triggers connection.
-    fn restore_saved_eks_connections(&mut self) {
+    /// Creates sidebar entries, writes kubeconfig files. Returns context names for auto-connect.
+    fn restore_saved_eks_connections(&mut self) -> Vec<String> {
         use baeus_core::aws_eks::{self, EksCluster};
         use crate::layout::sidebar::{ClusterEntry, ClusterSource, generate_initials, generate_cluster_color};
 
         let saved = self.preferences.saved_eks_connections.clone();
         if saved.is_empty() {
-            return;
+            return Vec::new();
         }
         tracing::info!("Restoring {} saved EKS connections", saved.len());
+        let mut restored = Vec::new();
 
         for conn in &saved {
             let cluster = EksCluster {
@@ -855,6 +867,7 @@ impl AppShell {
             match self.generate_eks_kubeconfig_file_with_role(&context_name, &cluster, role_arn) {
                 Ok(path) => {
                     self.kubeconfig_paths.insert(context_name.clone(), path);
+                    restored.push(context_name.clone());
                     tracing::info!("Restored EKS cluster '{}' with kubeconfig", context_name);
                 }
                 Err(e) => {
@@ -862,6 +875,57 @@ impl AppShell {
                 }
             }
         }
+        restored
+    }
+
+    /// Check GitHub releases for a newer version. Runs in the background.
+    fn check_for_updates(&self, cx: &mut Context<Self>) {
+        let tokio_handle = cx.global::<GpuiTokioHandle>().0.clone();
+        cx.spawn(async move |this: WeakEntity<AppShell>, cx: &mut AsyncApp| {
+            let result = tokio_handle.spawn(async {
+                let output = tokio::process::Command::new("curl")
+                    .args([
+                        "-sf",
+                        "-H", "Accept: application/vnd.github.v3+json",
+                        "https://api.github.com/repos/Craigeous/baeus/releases/latest",
+                    ])
+                    .output()
+                    .await
+                    .map_err(|e| format!("curl failed: {e}"))?;
+
+                if !output.status.success() {
+                    return Err("GitHub API request failed".to_string());
+                }
+
+                let body: serde_json::Value = serde_json::from_slice(&output.stdout)
+                    .map_err(|e| format!("Failed to parse response: {e}"))?;
+
+                let tag = body.get("tag_name")
+                    .and_then(|v| v.as_str())
+                    .ok_or("No tag_name in response")?
+                    .to_string();
+                let url = body.get("html_url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("https://github.com/Craigeous/baeus/releases")
+                    .to_string();
+
+                Ok::<(String, String), String>((tag, url))
+            }).await;
+
+            if let Ok(Ok((tag, url))) = result {
+                let current = env!("CARGO_PKG_VERSION");
+                let latest = tag.trim_start_matches('v');
+                if latest != current {
+                    tracing::info!("Update available: {current} → {latest}");
+                    this.update(cx, |this, cx| {
+                        this.update_available = Some((latest.to_string(), url));
+                        cx.notify();
+                    }).ok();
+                } else {
+                    tracing::info!("App is up to date ({current})");
+                }
+            }
+        }).detach();
     }
 
     /// T323: Retrieve a previously-stored kube client for the given context name.
@@ -1487,12 +1551,13 @@ impl AppShell {
         let context = context_name.to_string();
         tracing::info!("Connecting to cluster: {}", context);
 
-        // If an EKS cluster has no stored credentials and no active client,
+        // If an EKS cluster has no stored credentials, no active client, and no kubeconfig,
         // we can't connect it — return silently. The async role assumption task
         // will call us when credentials are ready.
         if context.starts_with("eks:")
             && !self.eks_cluster_data.contains_key(&context)
             && !self.active_clients.contains_key(&context)
+            && !self.kubeconfig_paths.contains_key(&context)
         {
             tracing::info!("EKS cluster '{}' has no credentials yet, skipping connection", context);
             return;
@@ -1518,7 +1583,7 @@ impl AppShell {
 
         // If this is an EKS wizard cluster, connect using temp kubeconfig with exec plugin.
         // This uses `aws eks get-token` which refreshes tokens automatically (no 60s expiry).
-        if let Some((cluster, _creds, role_arn)) = self.eks_cluster_data.get(&context).cloned() {
+        if let Some((cluster, creds, role_arn)) = self.eks_cluster_data.get(&context).cloned() {
             tracing::info!(
                 "EKS connect via kubeconfig exec: cluster '{}', role={:?}",
                 context, role_arn,
@@ -1543,18 +1608,25 @@ impl AppShell {
             Self::set_sidebar_cluster_status(&mut self.sidebar, &context, ClusterStatus::Connecting);
             Self::set_manager_connecting(&mut self.cluster_manager, &context);
 
-            // Clear stored credentials — the exec plugin handles auth now
+            // Extract credentials for in-memory injection (never written to disk)
+            let ak = creds.access_key_id().to_string();
+            let sk = creds.secret_access_key().to_string();
+            let st = creds.session_token().map(|s| s.to_string());
+
+            // Clear stored credentials
             self.eks_cluster_data.remove(&context);
 
             let tokio_handle = cx.global::<GpuiTokioHandle>().0.clone();
             let ctx = context.clone();
             let kube_ctx = context.clone();
+            let saved_connections = self.preferences.saved_eks_connections.clone();
             cx.spawn(async move |this: WeakEntity<AppShell>, cx: &mut AsyncApp| {
                 let result = tokio_handle.spawn(async move {
-                    // Use the standard kubeconfig-based client creation — this invokes
-                    // the exec plugin (aws eks get-token) for auth, which auto-refreshes.
-                    let client = baeus_core::client::create_client_from_path(
-                        &kube_ctx, &kubeconfig_path, None,
+                    // Inject wizard's in-memory credentials into the exec env
+                    // so aws eks get-token can authenticate without system AWS CLI creds.
+                    let client = baeus_core::client::create_client_from_path_with_aws_creds(
+                        &kube_ctx, &kubeconfig_path,
+                        &ak, &sk, st.as_deref(),
                     ).await.map_err(|e| format!("{e:#}"))?;
                     let version = baeus_core::client::verify_connection(&client)
                         .await.map_err(|e| format!("{e:#}"))?;
@@ -1577,10 +1649,11 @@ impl AppShell {
                         }).ok();
                     }
                     Ok(Err(msg)) => {
-                        tracing::error!("EKS connection failed: {msg}");
+                        let enriched = Self::enrich_eks_error(&msg, &ctx, &saved_connections);
+                        tracing::error!("EKS connection failed: {enriched}");
                         this.update(cx, |this, cx| {
                             Self::set_sidebar_cluster_status(&mut this.sidebar, &ctx, ClusterStatus::Error);
-                            this.connection_errors.insert(ctx.clone(), msg);
+                            this.connection_errors.insert(ctx.clone(), enriched);
                             cx.notify();
                         }).ok();
                     }
@@ -1601,6 +1674,53 @@ impl AppShell {
         // 1. Update sidebar cluster status to Connecting.
         Self::set_sidebar_cluster_status(&mut self.sidebar, &context, ClusterStatus::Connecting);
 
+        // Standard kubeconfig connection path (non-EKS, or restored EKS with kubeconfig)
+        self.connect_cluster_via_kubeconfig(context, cx);
+    }
+
+    /// Enrich an EKS connection error with re-auth guidance.
+    fn enrich_eks_error(
+        msg: &str,
+        context_name: &str,
+        saved_connections: &[crate::views::preferences::SavedEksConnectionInfo],
+    ) -> String {
+        let is_auth_error = msg.contains("Unauthorized")
+            || msg.contains("401")
+            || msg.contains("forbidden")
+            || msg.contains("403")
+            || msg.contains("ExpiredToken")
+            || msg.contains("InvalidClientTokenId");
+
+        if !is_auth_error {
+            return msg.to_string();
+        }
+
+        // Find the saved connection for this context to get SSO info
+        let sso_info = saved_connections.iter().find(|c| {
+            let ctx = baeus_core::aws_eks::eks_context_name_from_parts(&c.cluster_name, &c.region);
+            ctx == context_name
+        });
+
+        let mut enriched = format!("{msg}\n\nAWS credentials may have expired.");
+        if let Some(conn) = sso_info {
+            if conn.auth_method == "Sso" {
+                enriched.push_str("\n\nTo re-authenticate, run:");
+                enriched.push_str("\n  aws sso login");
+                if let Some(ref url) = conn.sso_start_url {
+                    enriched.push_str(&format!("\n\nSSO Start URL: {url}"));
+                }
+            }
+        } else {
+            enriched.push_str("\n\nRun 'aws sso login' or check your AWS credentials.");
+        }
+        enriched
+    }
+
+    fn connect_cluster_via_kubeconfig(
+        &mut self,
+        context: String,
+        cx: &mut Context<Self>,
+    ) {
         // 2. Update core cluster manager to Connecting.
         Self::set_manager_connecting(&mut self.cluster_manager, &context);
 
@@ -4376,6 +4496,7 @@ impl AppShell {
         let remove_id = ElementId::Name(
             SharedString::from(format!("ctx-menu-remove-{cluster_id}")),
         );
+        let remove_ctx = context_name.clone();
         menu = menu.child(
             div()
                 .id(remove_id)
@@ -4385,6 +4506,19 @@ impl AppShell {
                 .hover(move |s| s.bg(hover_bg))
                 .text_color(gpui::rgb(0xEF4444))
                 .on_click(cx.listener(move |this, _event, _window, _cx| {
+                    // Clean up cached kubeconfig file
+                    if let Some(path) = this.kubeconfig_paths.remove(&remove_ctx) {
+                        if path.contains(".baeus/eks-kubeconfigs") {
+                            let _ = std::fs::remove_file(&path);
+                        }
+                    }
+                    // Remove from saved EKS connections in preferences
+                    this.preferences.saved_eks_connections
+                        .retain(|c| baeus_core::aws_eks::eks_context_name_from_parts(&c.cluster_name, &c.region) != remove_ctx);
+                    this.save_preferences();
+                    // Remove EKS cluster data
+                    this.eks_cluster_data.remove(&remove_ctx);
+                    // Remove from sidebar
                     this.sidebar.remove_cluster(cluster_id);
                     this.context_menu_cluster = None;
                     this.context_menu_dismissed_this_frame = true;
@@ -5575,6 +5709,19 @@ impl AppShell {
             .text_color(text_secondary)
             .child(SharedString::from(k8s_version_label.to_string()));
 
+        // --- Center: Update notification ---
+        let update_banner = if let Some((ref version, ref _url)) = self.update_available {
+            let msg = format!(
+                "Update available: v{version} — Run: curl -sL https://github.com/Craigeous/baeus/releases/latest/download/Baeus-macos-arm64.dmg -o /tmp/Baeus.dmg && open /tmp/Baeus.dmg"
+            );
+            div()
+                .text_xs()
+                .text_color(gpui::rgb(0xF59E0B)) // amber
+                .child(SharedString::from(msg))
+        } else {
+            div()
+        };
+
         div()
             .flex()
             .flex_row()
@@ -5586,6 +5733,8 @@ impl AppShell {
             .border_color(border)
             .flex_shrink_0()
             .child(left)
+            .child(div().flex_1()) // spacer
+            .child(update_banner)
             .child(div().flex_1()) // spacer
             .child(right)
     }
@@ -6605,15 +6754,20 @@ impl AppShell {
             "saved_eks_connections": self.preferences.saved_eks_connections,
         });
 
-        if let Some(config_dir) = dirs::config_dir() {
-            let dir = config_dir.join("baeus");
+        if let Some(home) = dirs::home_dir() {
+            let dir = home.join(".baeus");
             if std::fs::create_dir_all(&dir).is_ok() {
                 let path = dir.join("preferences.json");
                 match serde_json::to_string_pretty(&json) {
                     Ok(contents) => {
-                        if let Err(e) = std::fs::write(&path, contents) {
+                        if let Err(e) = std::fs::write(&path, &contents) {
                             tracing::error!("Failed to save preferences: {e}");
                         } else {
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::PermissionsExt;
+                                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+                            }
                             tracing::info!("Preferences saved to {}", path.display());
                         }
                     }

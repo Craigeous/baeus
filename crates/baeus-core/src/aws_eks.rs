@@ -878,6 +878,11 @@ pub fn eks_context_name(cluster: &EksCluster) -> String {
     format!("eks:{}:{}", cluster.region, cluster.name)
 }
 
+/// Build an EKS context name from individual parts (for matching without an EksCluster).
+pub fn eks_context_name_from_parts(cluster_name: &str, region: &str) -> String {
+    format!("eks:{region}:{cluster_name}")
+}
+
 // ---------------------------------------------------------------------------
 // Crypto helpers (SHA-256 / HMAC-SHA256 using ring)
 // ---------------------------------------------------------------------------
