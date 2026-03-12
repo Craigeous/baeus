@@ -1583,7 +1583,7 @@ impl AppShell {
 
         // If this is an EKS wizard cluster, connect using temp kubeconfig with exec plugin.
         // This uses `aws eks get-token` which refreshes tokens automatically (no 60s expiry).
-        if let Some((cluster, _creds, role_arn)) = self.eks_cluster_data.get(&context).cloned() {
+        if let Some((cluster, creds, role_arn)) = self.eks_cluster_data.get(&context).cloned() {
             tracing::info!(
                 "EKS connect via kubeconfig exec: cluster '{}', role={:?}",
                 context, role_arn,
@@ -1608,7 +1608,12 @@ impl AppShell {
             Self::set_sidebar_cluster_status(&mut self.sidebar, &context, ClusterStatus::Connecting);
             Self::set_manager_connecting(&mut self.cluster_manager, &context);
 
-            // Clear stored credentials — the exec plugin handles auth now
+            // Extract credentials for in-memory injection (never written to disk)
+            let ak = creds.access_key_id().to_string();
+            let sk = creds.secret_access_key().to_string();
+            let st = creds.session_token().map(|s| s.to_string());
+
+            // Clear stored credentials
             self.eks_cluster_data.remove(&context);
 
             let tokio_handle = cx.global::<GpuiTokioHandle>().0.clone();
@@ -1617,10 +1622,11 @@ impl AppShell {
             let saved_connections = self.preferences.saved_eks_connections.clone();
             cx.spawn(async move |this: WeakEntity<AppShell>, cx: &mut AsyncApp| {
                 let result = tokio_handle.spawn(async move {
-                    // Use the standard kubeconfig-based client creation — this invokes
-                    // the exec plugin (aws eks get-token) for auth, which auto-refreshes.
-                    let client = baeus_core::client::create_client_from_path(
-                        &kube_ctx, &kubeconfig_path, None,
+                    // Inject wizard's in-memory credentials into the exec env
+                    // so aws eks get-token can authenticate without system AWS CLI creds.
+                    let client = baeus_core::client::create_client_from_path_with_aws_creds(
+                        &kube_ctx, &kubeconfig_path,
+                        &ak, &sk, st.as_deref(),
                     ).await.map_err(|e| format!("{e:#}"))?;
                     let version = baeus_core::client::verify_connection(&client)
                         .await.map_err(|e| format!("{e:#}"))?;

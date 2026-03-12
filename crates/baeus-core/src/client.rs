@@ -193,6 +193,47 @@ pub async fn create_client_from_path(
     Ok(client)
 }
 
+/// Create a `kube::Client` with in-memory AWS credentials injected into the exec env.
+/// Used for initial EKS wizard connections where the exec plugin doesn't have
+/// system-level AWS credentials yet. Credentials stay in-memory, never written to disk.
+pub async fn create_client_from_path_with_aws_creds(
+    context_name: &str,
+    kubeconfig_path: &str,
+    access_key_id: &str,
+    secret_access_key: &str,
+    session_token: Option<&str>,
+) -> Result<Client> {
+    let mut kubeconfig = kube::config::Kubeconfig::read_from(kubeconfig_path)
+        .with_context(|| format!("Failed to read kubeconfig from '{kubeconfig_path}'"))?;
+
+    crate::aws_sso::inject_aws_credentials_into_kubeconfig(
+        &mut kubeconfig,
+        context_name,
+        access_key_id,
+        secret_access_key,
+        session_token,
+    )?;
+
+    let config = Config::from_custom_kubeconfig(
+        kubeconfig,
+        &kube::config::KubeConfigOptions {
+            context: Some(context_name.to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .with_context(|| {
+        format!("Failed to load context '{context_name}' from '{kubeconfig_path}'")
+    })?;
+
+    let config = apply_timeouts(config);
+
+    let client = Client::try_from(config)
+        .with_context(|| format!("Failed to create kube client for context '{context_name}'"))?;
+
+    Ok(client)
+}
+
 /// Create a `kube::Client` for the given kubeconfig context name.
 ///
 /// Uses the default kubeconfig resolution (KUBECONFIG env var → ~/.kube/config)
