@@ -1543,12 +1543,13 @@ impl AppShell {
         let context = context_name.to_string();
         tracing::info!("Connecting to cluster: {}", context);
 
-        // If an EKS cluster has no stored credentials and no active client,
+        // If an EKS cluster has no stored credentials, no active client, and no kubeconfig,
         // we can't connect it — return silently. The async role assumption task
         // will call us when credentials are ready.
         if context.starts_with("eks:")
             && !self.eks_cluster_data.contains_key(&context)
             && !self.active_clients.contains_key(&context)
+            && !self.kubeconfig_paths.contains_key(&context)
         {
             tracing::info!("EKS cluster '{}' has no credentials yet, skipping connection", context);
             return;
