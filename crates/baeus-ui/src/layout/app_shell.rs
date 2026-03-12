@@ -799,7 +799,12 @@ impl AppShell {
         }
 
         // Restore saved EKS connections from preferences.
-        shell.restore_saved_eks_connections();
+        let restored_contexts = shell.restore_saved_eks_connections();
+
+        // Auto-connect restored EKS clusters.
+        for ctx in &restored_contexts {
+            shell.handle_connect_cluster(ctx, cx);
+        }
 
         // Check for updates in the background.
         shell.check_for_updates(cx);
@@ -808,16 +813,17 @@ impl AppShell {
     }
 
     /// Restore persisted EKS connections on app startup.
-    /// Creates sidebar entries, writes kubeconfig files, and triggers connection.
-    fn restore_saved_eks_connections(&mut self) {
+    /// Creates sidebar entries, writes kubeconfig files. Returns context names for auto-connect.
+    fn restore_saved_eks_connections(&mut self) -> Vec<String> {
         use baeus_core::aws_eks::{self, EksCluster};
         use crate::layout::sidebar::{ClusterEntry, ClusterSource, generate_initials, generate_cluster_color};
 
         let saved = self.preferences.saved_eks_connections.clone();
         if saved.is_empty() {
-            return;
+            return Vec::new();
         }
         tracing::info!("Restoring {} saved EKS connections", saved.len());
+        let mut restored = Vec::new();
 
         for conn in &saved {
             let cluster = EksCluster {
@@ -861,6 +867,7 @@ impl AppShell {
             match self.generate_eks_kubeconfig_file_with_role(&context_name, &cluster, role_arn) {
                 Ok(path) => {
                     self.kubeconfig_paths.insert(context_name.clone(), path);
+                    restored.push(context_name.clone());
                     tracing::info!("Restored EKS cluster '{}' with kubeconfig", context_name);
                 }
                 Err(e) => {
@@ -868,6 +875,7 @@ impl AppShell {
                 }
             }
         }
+        restored
     }
 
     /// Check GitHub releases for a newer version. Runs in the background.

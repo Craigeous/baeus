@@ -865,6 +865,16 @@ impl AppShell {
         }
         self.save_preferences();
 
+        // Reconnect any previously connected EKS clusters that may have been
+        // disrupted by the SSO auth flow (new SSO token can invalidate old session).
+        let existing_eks: Vec<String> = self.sidebar.clusters.iter()
+            .filter(|c| c.context_name.starts_with("eks:") && c.status == ClusterStatus::Error)
+            .map(|c| c.context_name.clone())
+            .collect();
+        for ctx in existing_eks {
+            self.handle_connect_cluster(&ctx, cx);
+        }
+
         self.eks_wizard = None;
         cx.notify();
     }
