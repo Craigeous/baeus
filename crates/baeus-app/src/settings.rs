@@ -223,6 +223,9 @@ pub struct SavedEksConnection {
     pub sso_start_url: Option<String>,
     /// SSO region (used for re-auth).
     pub sso_region: Option<String>,
+    /// IAM role ARN to assume for this cluster (if any).
+    #[serde(default)]
+    pub role_arn: Option<String>,
 }
 
 /// Which auth method was used (for re-auth guidance, not credential storage).
@@ -255,15 +258,33 @@ impl Default for UserPreferences {
 
 impl UserPreferences {
     pub fn config_path() -> Result<PathBuf> {
-        let config_dir =
-            dirs::config_dir().context("Could not determine config directory")?;
-        Ok(config_dir.join("baeus").join("preferences.json"))
+        let baeus_dir = dirs::home_dir()
+            .context("Could not determine home directory")?
+            .join(".baeus");
+        Ok(baeus_dir.join("preferences.json"))
     }
 
     pub fn load() -> Result<Self> {
         let path = Self::config_path()?;
         if !path.exists() {
-            return Ok(Self::default());
+            // Migrate from old location if it exists
+            if let Some(old_path) = Self::legacy_config_path() {
+                if old_path.exists() {
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if std::fs::copy(&old_path, &path).is_ok() {
+                        let _ = std::fs::remove_file(&old_path);
+                        tracing::info!(
+                            "Migrated preferences from {} to {}",
+                            old_path.display(), path.display(),
+                        );
+                    }
+                }
+            }
+            if !path.exists() {
+                return Ok(Self::default());
+            }
         }
         let contents = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read preferences from {}", path.display()))?;
@@ -271,6 +292,11 @@ impl UserPreferences {
             .with_context(|| "Failed to parse preferences JSON")?;
         prefs.sanitize_paths();
         Ok(prefs)
+    }
+
+    /// Legacy preferences path (~/Library/Application Support/baeus/preferences.json).
+    fn legacy_config_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|d| d.join("baeus").join("preferences.json"))
     }
 
     /// Validate and remove unsafe paths from preferences (path traversal prevention).
