@@ -1,3 +1,4 @@
+# Baeus — Kubernetes cluster management UI
 [workspace]
 resolver = "2"
 members = [
